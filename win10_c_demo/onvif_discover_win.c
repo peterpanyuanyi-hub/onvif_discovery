@@ -31,51 +31,71 @@ void generate_uuid(char *buffer, size_t size) {
 // Finds content between <tag> and </tag> or <tag ...> and </tag>
 // Returns 1 if found, 0 otherwise. result buffer is filled with content.
 int extract_xml_tag(const char *xml, const char *tag_name, char *result, size_t result_size) {
-    char start_tag[128];
-    char end_tag[128];
-    
-    // Construct simple start tag <TagName>
-    snprintf(start_tag, sizeof(start_tag), "<%s", tag_name); // Just match <TagName...
-    snprintf(end_tag, sizeof(end_tag), "</%s>", tag_name);
+    const char *start_pos = NULL;
+    char prefix[64] = {0};
+    int has_prefix = 0;
 
-    // Find start
-    const char *start_pos = strstr(xml, start_tag);
+    // 1. Try <TagName
+    char search_tag[128];
+    snprintf(search_tag, sizeof(search_tag), "<%s", tag_name);
+    start_pos = strstr(xml, search_tag);
+    
+    if (start_pos) {
+        // Check if it's followed by space, >, or /
+        char next_char = start_pos[strlen(search_tag)];
+        if (next_char != ' ' && next_char != '>' && next_char != '/') {
+            start_pos = NULL; // False match like <TagNameSuffix
+        }
+    }
+
     if (!start_pos) {
-        // Try searching with namespace prefix (naive approach, just search for :TagName)
-        char ns_tag[128];
-        snprintf(ns_tag, sizeof(ns_tag), ":%s", tag_name);
-        start_pos = strstr(xml, ns_tag);
-        if (start_pos) {
-             // Verify it is an opening tag
-             const char *check = start_pos;
-             while (check > xml && *check != '<' && *check != ' ') check--;
-             if (*check == '<') start_pos = check;
-             else start_pos = NULL;
+        // 2. Try :TagName
+        snprintf(search_tag, sizeof(search_tag), ":%s", tag_name);
+        const char *p = strstr(xml, search_tag);
+        while (p) {
+            // Check backward for <
+            const char *check = p;
+            while (check > xml && *check != '<' && *check != ' ') check--;
+            if (*check == '<') {
+                // Found <Prefix:TagName
+                start_pos = check;
+                size_t prefix_len = p - check - 1;
+                if (prefix_len < sizeof(prefix)) {
+                    strncpy(prefix, check + 1, prefix_len);
+                    prefix[prefix_len] = '\0';
+                    has_prefix = 1;
+                }
+                break;
+            }
+            // Continue searching if this wasn't it
+            p = strstr(p + 1, search_tag);
         }
     }
 
     if (!start_pos) return 0;
 
-    // Find the closing bracket of the start tag
-    const char *content_start = strchr(start_pos, '>');
-    if (!content_start) return 0;
-    content_start++; // Skip '>'
+    // Check for self-closing or content start
+    const char *tag_end = strchr(start_pos, '>');
+    if (!tag_end) return 0;
 
-    // Find end tag
-    const char *end_pos = strstr(content_start, end_tag);
-    if (!end_pos) {
-        // Try with namespace
-        char ns_end_tag[128];
-        snprintf(ns_end_tag, sizeof(ns_end_tag), ":%s>", tag_name);
-        end_pos = strstr(content_start, ns_end_tag);
-        if (end_pos) {
-            const char *check = end_pos;
-            while (check > content_start && *check != '/') check--;
-            if (check > content_start && *(check-1) == '<') end_pos = check - 1;
-            else end_pos = NULL;
-        }
+    // Check if self-closing: ends with />
+    if (tag_end > start_pos && *(tag_end - 1) == '/') {
+        // Self-closing, empty content
+        if (result_size > 0) result[0] = '\0';
+        return 1;
     }
 
+    const char *content_start = tag_end + 1;
+
+    // Construct end tag
+    char end_tag_str[128];
+    if (has_prefix) {
+        snprintf(end_tag_str, sizeof(end_tag_str), "</%s:%s>", prefix, tag_name);
+    } else {
+        snprintf(end_tag_str, sizeof(end_tag_str), "</%s>", tag_name);
+    }
+
+    const char *end_pos = strstr(content_start, end_tag_str);
     if (!end_pos) return 0;
 
     size_t len = end_pos - content_start;
@@ -86,7 +106,7 @@ int extract_xml_tag(const char *xml, const char *tag_name, char *result, size_t 
     return 1;
 }
 
-// Helper to decode HTML entities (basic)
+// Helper to decode HTML entities (basic + numeric)
 void decode_html_entities(char *str) {
     char *p = str;
     char *w = str;
@@ -96,6 +116,26 @@ void decode_html_entities(char *str) {
         else if (strncmp(p, "&amp;", 5) == 0) { *w++ = '&'; p += 5; }
         else if (strncmp(p, "&quot;", 6) == 0) { *w++ = '"'; p += 6; }
         else if (strncmp(p, "&apos;", 6) == 0) { *w++ = '\''; p += 6; }
+        else if (strncmp(p, "&#", 2) == 0) {
+            // Handle numeric entities &#...;
+            char *end_ent = strchr(p, ';');
+            if (end_ent) {
+                int code = 0;
+                if (p[2] == 'x' || p[2] == 'X') {
+                    sscanf(p + 3, "%x", &code);
+                } else {
+                    sscanf(p + 2, "%d", &code);
+                }
+                if (code > 0 && code < 256) {
+                    *w++ = (char)code;
+                    p = end_ent + 1;
+                } else {
+                    *w++ = *p++; // fallback
+                }
+            } else {
+                *w++ = *p++;
+            }
+        }
         else { *w++ = *p++; }
     }
     *w = '\0';
