@@ -104,8 +104,7 @@ void decode_html_entities(char *str) {
     *w = '\0';
 }
 
-int main() 
-{
+int main() {
     int sock;
     struct sockaddr_in multicast_addr, local_addr;
     char buffer[MAX_BUF_SIZE];
@@ -203,7 +202,6 @@ int main()
         
         if (ret > 0) {
             int n = recvfrom(sock, buffer, MAX_BUF_SIZE - 1, 0, (struct sockaddr *)&sender_addr, &sender_len);
-			//printf("buffer:\n:%s\n",buffer);
             if (n > 0) {
                 buffer[n] = '\0';
                 
